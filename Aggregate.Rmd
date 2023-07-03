@@ -1,0 +1,550 @@
+---
+title: "Aggregate"
+output: html_document
+date: "2023-07-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+set.seed(1732)
+library(viridis)
+library(dplyr)
+library(Seurat)
+library(scales)
+library(cowplot)
+library(ggplot2)
+library(RColorBrewer)
+library(gplots)
+library(sctransform)
+library(scDblFinder)
+library(SingleCellExperiment)
+library(cluster)
+library(factoextra)
+library(intrinsicDimension)
+library(xlsx)
+library(tibble)
+library(EnhancedVolcano)
+library(DoHeatmap)
+library(EasyCellType)
+library(org.Mm.eg.db)
+library(AnnotationDbi)
+library(dplyr)
+library(celda)
+```
+
+#Colmaps
+```{r}
+colmaps <- c("#a6cee3",
+             "#1f78b4", 
+             "#b2df8a",
+             "#33a02c",
+             "#fb9a99",
+             "#e31a1c",
+             "#fdbf6f",
+             "#ff7f00",
+             "#cab2d6",
+             "#6a3d9a",
+             "#ffd92f",
+             "#b15928",
+             "#737373")
+```
+
+#Set working directory
+```{r}
+setwd("~/Desktop/Valerie/DataforR/Lu")
+```
+
+#Cellranger aggregate
+The samples were equalized by cellranger aggregate after running cellranger count. The two samples are in one filtered_feature_bc_matrix
+
+#Sample 4399
+The filtered_feature_bc_matrix seperates the samples based on _1 and _2 in as an extra tag on the cell barcodes. To assign the condition names, a metadata file is generated and added to the Seurat object by AddMetaData.
+```{r}
+cell.data <- Read10X("4399Comp/outs/count/filtered_feature_bc_matrix")
+Aggr_4399_Seurat <- CreateSeuratObject(counts = cell.data, names.delim = "-", names.field = 2)
+
+unique(Aggr_4399_Seurat@meta.data$orig.ident) 
+example_metadata <- tibble::tribble(
+  ~orig.ident, ~sample_name, 
+  1, "Illumina",
+  2, "MGI"
+)
+
+example_metadata$orig.ident <- as.factor(example_metadata$orig.ident)
+meta <- Aggr_4399_Seurat@meta.data %>% 
+  dplyr::select(orig.ident) %>%
+  rownames_to_column("barcodes")
+full_new_meta <- full_join(x=meta, y=example_metadata) %>%
+  column_to_rownames("barcodes") %>%
+  dplyr::select(-orig.ident)
+
+seurat <- AddMetaData(object= Aggr_4399_Seurat, metadata =  full_new_meta, col.name = "orig.ident")
+```
+
+Ambient RNA is removed by the DecontX method
+```{r}
+counts <- GetAssayData(object = seurat, slot = "counts")
+
+sce <- SingleCellExperiment(list(counts = counts))
+
+sce <- decontX(sce)
+
+umap <- reducedDim(sce, "decontX_UMAP")
+plotDimReduceCluster(x = sce$decontX_clusters,
+    dim1 = umap[, 1], dim2 = umap[, 2])
+
+plotDecontXContamination(sce)
+
+Seurat_4399 <- CreateSeuratObject((decontXcounts(sce)))
+
+Seurat_4399 <- AddMetaData(object= Seurat_4399, metadata =  full_new_meta, col.name = "orig.ident")
+```
+The quality control for both techniques
+```{r}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+Seurat_4399[["percent.mt"]] <- PercentageFeatureSet(Seurat_4399, pattern = "^MT-")
+Seurat_4399[["percent.ribo"]] <- PercentageFeatureSet(Seurat_4399, pattern = "^RP")
+
+# Visualize QC metrics as a violin plot
+png("C:/Valerie/violinplot_aggregate.png", res=600, width=8000, height=5000)
+VlnPlot(Seurat_4399, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), ncol = 4, pt.size = 0.01, split.by = "orig.ident")
+dev.off()
+
+head(Seurat_4399@meta.data, 5)
+
+FeatureScatter(Seurat_4399,"nFeature_RNA", "nCount_RNA" )
+```
+The dims and medians are checked for the aggregated and seperate cells. This is to check if the aggregation was successfull.The median features/ cell should be close to each other. 
+```{r}
+dim(Seurat_4399) #36601 27614
+median(Seurat_4399$nFeature_RNA) #1581
+median(Seurat_4399$nCount_RNA) #2113
+
+Illumina_4399 <- subset(Seurat_4399, orig.ident=="Illumina")
+dim(Illumina_4399) #36601 15018
+median(Illumina_4399$nFeature_RNA) #1555
+median(Illumina_4399$nCount_RNA) #2080
+
+MGI_4399 <- subset(Seurat_4399, orig.ident=="MGI")
+dim(MGI_4399) #36601 12596
+median(MGI_4399$nFeature_RNA) #1602
+median(MGI_4399$nCount_RNA) #2149
+```
+```{r}
+Seurat_4399_subset <- subset(Seurat_4399, subset = nFeature_RNA > 50 & nFeature_RNA < 6000 & percent.mt < 25)
+```
+
+The doublets are detected and removed by scDblFinder
+```{r}
+sce <- as.SingleCellExperiment(Seurat_4399_norm)
+
+sce <- scDblFinder(sce)
+#3325 (13.6%) doublets called
+
+Seurat_4399_norm_db <- as.Seurat(sce)
+
+Seurat_4399_norm_db <- AddMetaData(object= Seurat_4399_norm_db, metadata =  full_new_meta, col.name = "orig.ident")
+
+Seurat_4399_norm_db <- subset(Seurat_4399_norm_db, scDblFinder.class=="singlet")
+
+Seurat_4399_norm_db <- SCTransform(Seurat_4399_norm_db, vars.to.regress = c("nCount_RNA","percent.mt"), verbose = FALSE, variable.features.n = 3000)
+```
+Generating the UMAPs
+```{r}
+Seurat_4399_norm_db <- RunPCA(Seurat_4399_norm_db, features = VariableFeatures(object = Seurat_4399_norm_db))
+Seurat_4399_norm_db <- FindNeighbors(Seurat_4399_norm_db, dims = 1:50)
+Seurat_4399_norm_db <- FindClusters(Seurat_4399_norm_db, resolution = 0.15)
+Seurat_4399_norm_db <- RunUMAP(Seurat_4399_norm_db, dims = 1:50)
+
+png("C:/Valerie/UMAP_4399_aggregate.png", res=600, width=7000, height=5000)
+plot <- DimPlot(Seurat_4399_norm_db, reduction = "umap", label = F, split.by = "orig.ident", cols = colmaps)
+plot
+dev.off()
+
+FeaturePlot(Seurat_4399_norm_db, features = "POSTN") + plot
+
+#Cluster 0: CDH1 / EPCAM / KRT19/ ERBB2 (Epithelial)
+#Cluster 1:PDGFRA / COL1A1/ ACTA2/ POSTN  (Fibroblasts)
+#Cluster 2: VWF / PLVAP / PECAM1 (Endothelial) 
+#Cluster 3: CDH1 / EPCAM / KRT19/ ERBB2 (Epithelial)
+#Cluster 4:CDH1 / EPCAM / KRT19/ ERBB2 (Epithelial)
+#Cluster 5: 
+#Cluster 6: SERPINA3/ MYLK (breast myoepithelial)
+#Cluster 7: CD163 (Myeloid cells)
+#breast cancer: KRT7/ CDH1/ EPCAM/ SOLE/ ERBB2/ CEACAM6/ ESR1/ MKI67
+#T-cells: CCL5/IL7R/CD3E
+#fibroblasts: ACTA2/ LUM/ POSTN/MMP2
+#breast myoepithelial: DST/ MYH11/ SERPINA3/ KRT5/ MYLK
+#Mast cells: CPA3/TPSAB1/ CTSG
+```
+
+
+```{r}
+Seurat_4399_norm_db$cell_cluster <- paste(Seurat_4399_norm_db$celltypes, sep = '_')
+Seurat_4399_norm_db_table1 <- prop.table(table(Seurat_4399_norm_db$cell_cluster, Seurat_4399_norm_db$orig.ident ), margin = 2)
+Seurat_4399_norm_db_table2 <- Seurat_4399_norm_db_table1*100
+write.csv(combined4066_table2, "figures/Percentages_clusters_allcells.csv")
+
+png("C:/Valerie/barplot_Seurat_4399_norm_db.png", res=600, width=6000, height=3000)
+par(mar=c(10, 5, 3, 28))
+barplot(Seurat_4399_norm_db_table2,
+  main = "Cell subcluster fractions",
+  ylab = "Percentage (%)",
+  col = colmaps,
+  xlim=c(0,4),
+  beside = FALSE,
+  las=2)
+dev.off()
+```
+
+```{r}
+new.cluster.ids <- c("Epithelial cells 1","Mesenchymal cells","Endothelial cells","Epithelial cells 2","Epithelial cells 3", "unknown cells","Myoepithelial", "Myeloid cells")
+names(new.cluster.ids) <- levels(Seurat_4399_norm_db)
+Seurat_4399_norm_db <- RenameIdents(Seurat_4399_norm_db, new.cluster.ids)
+Idents(Seurat_4399_norm_db) -> Seurat_4399_norm_db$celltypes
+
+#Cluster 0: CDH1 / EPCAM / KRT19/ ERBB2 (Epithelial)
+#Cluster 1:PDGFRA / COL1A1/ ACTA2/ POSTN  (Fibroblasts)
+#Cluster 2: VWF / PLVAP / PECAM1 (Endothelial) 
+#Cluster 3: CDH1 / EPCAM / KRT19/ ERBB2 (Epithelial)
+#Cluster 4:CDH1 / EPCAM / KRT19/ ERBB2 (Epithelial)
+#Cluster 5: 
+#Cluster 6: SERPINA3/ MYLK (breast myoepithelial)
+#Cluster 7: CD163 (Myeloid cells)
+```
+
+
+
+```{r}
+saveRDS(Seurat_4399_norm_db, "C:/Valerie/Seurat_4399_norm_db.rds")
+```
+
+
+#Sample 4411
+```{r}
+cell.data_4411 <- Read10X("C:/Valerie/4411comp/filtered_feature_bc_matrix")
+Aggr_4411_Seurat <- CreateSeuratObject(counts = cell.data_4411, names.delim = "-", names.field = 2)
+
+unique(Aggr_4411_Seurat@meta.data$orig.ident) 
+example_metadata <- tibble::tribble(
+  ~orig.ident, ~sample_name, 
+  1, "Illumina",
+  2, "MGI"
+)
+
+example_metadata$orig.ident <- as.factor(example_metadata$orig.ident)
+meta <- Aggr_4411_Seurat@meta.data %>% 
+  select(orig.ident) %>%
+  rownames_to_column("barcodes")
+full_new_meta <- full_join(x=meta, y=example_metadata) %>%
+  column_to_rownames("barcodes") %>%
+  select(-orig.ident)
+
+seurat_4411 <- AddMetaData(object= Aggr_4411_Seurat, metadata =  full_new_meta, col.name = "orig.ident")
+
+```
+
+```{r}
+counts <- GetAssayData(object = seurat_4411, slot = "counts")
+
+sce <- SingleCellExperiment(list(counts = counts))
+
+sce <- decontX(sce)
+
+umap <- reducedDim(sce, "decontX_UMAP")
+plotDimReduceCluster(x = sce$decontX_clusters,
+    dim1 = umap[, 1], dim2 = umap[, 2])
+
+plotDecontXContamination(sce)
+
+seurat_4411 <- CreateSeuratObject((decontXcounts(sce)))
+
+seurat_4411 <- AddMetaData(object= seurat_4411, metadata =  full_new_meta, col.name = "orig.ident")
+```
+
+```{r}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+seurat_4411[["percent.mt"]] <- PercentageFeatureSet(seurat_4411, pattern = "^MT-")
+seurat_4411[["percent.ribo"]] <- PercentageFeatureSet(seurat_4411, pattern = "^RP")
+
+# Visualize QC metrics as a violin plot
+png("C:/Valerie/violinplot_aggregate_4411.png", res=600, width=8000, height=5000)
+VlnPlot(seurat_4411, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), ncol = 4, pt.size = 0.01, split.by = "orig.ident")
+dev.off()
+
+head(seurat_4411@meta.data, 5)
+
+FeatureScatter(seurat_4411,"nFeature_RNA", "nCount_RNA" )
+```
+```{r}
+dim(seurat_4411) #36601 27614
+median(seurat_4411$nFeature_RNA) #1581
+median(seurat_4411$nCount_RNA) #2113
+
+Illumina_4411 <- subset(seurat_4411, orig.ident=="Illumina")
+dim(Illumina_4411) #36601 12965
+median(Illumina_4411$nFeature_RNA) #
+median(Illumina_4411$nCount_RNA) #2419.266
+
+MGI_4411 <- subset(seurat_4411, orig.ident=="MGI")
+dim(MGI_4411) #36601 12458
+median(MGI_4411$nFeature_RNA) #1641
+median(MGI_4411$nCount_RNA) #2419.168
+```
+```{r}
+seurat_4411_subset <- subset(seurat_4411, subset = nFeature_RNA > 50 & nFeature_RNA < 6000 & percent.mt < 25)
+
+#seurat_4411_norm <- SCTransform(seurat_4411_subset, vars.to.regress = c("nCount_RNA","percent.mt"), verbose = FALSE, variable.features.n = 3000)
+
+```
+
+```{r}
+sce <- as.SingleCellExperiment(seurat_4411_subset)
+
+sce <- scDblFinder(sce)
+#Threshold found:0.448
+#2870 (12.3%) doublets
+
+Seurat_4411_norm_db <- as.Seurat(sce)
+
+Seurat_4411_norm_db <- AddMetaData(object= Seurat_4411_norm_db, metadata =  full_new_meta, col.name = "orig.ident")
+
+Seurat_4411_norm_db <- subset(Seurat_4411_norm_db, scDblFinder.class=="singlet")
+
+Seurat_4411_norm_db <- SCTransform(Seurat_4411_norm_db, vars.to.regress = c("nCount_RNA","percent.mt"), verbose = FALSE, variable.features.n = 3000)
+```
+
+```{r}
+Seurat_4411_norm_db <- RunPCA(Seurat_4411_norm_db, features = VariableFeatures(object = Seurat_4411_norm_db))
+Seurat_4411_norm_db <- FindNeighbors(Seurat_4411_norm_db, dims = 1:50)
+Seurat_4411_norm_db <- FindClusters(Seurat_4411_norm_db, resolution = 0.08)
+Seurat_4411_norm_db <- RunUMAP(Seurat_4411_norm_db, dims = 1:50)
+
+png("C:/Valerie/UMAP_4411_aggregate.png", res=600, width=7000, height=5000)
+plot <- DimPlot(Seurat_4411_norm_db, reduction = "umap", label = F, split.by = "orig.ident", cols = colmaps)
+plot
+dev.off()
+
+FeaturePlot(Seurat_4411_norm_db, features = "CD163") + plot
+
+#Cluster 0: Epithelial
+#Cluster 1: Myeloid cells
+#Cluster 2: Myoepithelial
+#Cluster 3: Epithelial cells
+#Cluster 4:Endothelial
+#Cluster 5: Mesenchymal cells
+#Cluster 6: Unknown
+#CDH1 / EPCAM / KRT19/ ERBB2 (Epithelial)
+#VWF / PLVAP / PECAM1 (Endothelial)
+#CD163 (Myeloid cells)
+#breast cancer: KRT7/ CDH1/ EPCAM/ SOLE/ ERBB2/ CEACAM6/ ESR1/ MKI67
+#T-cells: CCL5/IL7R/CD3E
+#fibroblasts: ACTA2/ LUM/ POSTN/MMP2/ PDGFRA / COL1A1/ ACTA2/ POSTN  (Fibroblasts)
+#breast myoepithelial: DST/ MYH11/ SERPINA3/ KRT5/ MYLK#SERPINA3/ MYLK (breast myoepithelial)
+#Mast cells: CPA3/TPSAB1/ CTSG
+```
+
+```{r}
+new.cluster.ids <- c("Epithelial cells 1","Myeloid cells","Myoepithelial cells", "Epithelial cells 2","Endothelial cells","Mesenchymal cells","unknown cells")
+names(new.cluster.ids) <- levels(Seurat_4411_norm_db)
+Seurat_4411_norm_db <- RenameIdents(Seurat_4411_norm_db, new.cluster.ids)
+Idents(Seurat_4411_norm_db) -> Seurat_4411_norm_db$celltypes
+
+#Cluster 0: Epithelial
+#Cluster 1: Myeloid cells
+#Cluster 2: Myoepithelial
+#Cluster 3: Epithelial cells
+#Cluster 4:Endothelial
+#Cluster 5: Mesenchymal cells
+#Cluster 6: Unknown
+```
+
+```{r}
+Seurat_4411_norm_db$cell_cluster <- paste(Seurat_4411_norm_db$celltypes, sep = '_')
+Seurat_4411_norm_db_table1 <- prop.table(table(Seurat_4411_norm_db$cell_cluster, Seurat_4411_norm_db$orig.ident ), margin = 2)
+Seurat_4411_norm_db_table2 <- Seurat_4411_norm_db_table1*100
+write.csv(combined4066_table2, "figures/Percentages_clusters_allcells.csv")
+
+png("C:/Valerie/barplot_Seurat_4411_norm_db.png", res=600, width=6000, height=3000)
+par(mar=c(10, 5, 3, 28))
+barplot(Seurat_4411_norm_db_table2,
+  main = "Cell subcluster fractions",
+  ylab = "Percentage (%)",
+  col = colmaps,
+  xlim=c(0,4),
+  beside = FALSE,
+  las=2)
+dev.off()
+```
+
+
+
+```{r}
+saveRDS(Seurat_4411_norm_db, "C:/Valerie/Seurat_4411_norm_db")
+```
+
+#Sample 4066
+```{r}
+cell.data_4066 <- Read10X("C:/Valerie/4066comp/filtered_feature_bc_matrix")
+Aggr_4066_Seurat <- CreateSeuratObject(counts = cell.data_4066, names.delim = "-", names.field = 2)
+
+unique(Aggr_4066_Seurat@meta.data$orig.ident) 
+example_metadata <- tibble::tribble(
+  ~orig.ident, ~sample_name, 
+  1, "Illumina",
+  2, "MGI"
+)
+
+example_metadata$orig.ident <- as.factor(example_metadata$orig.ident)
+meta <- Aggr_4066_Seurat@meta.data %>% 
+  select(orig.ident) %>%
+  rownames_to_column("barcodes")
+full_new_meta <- full_join(x=meta, y=example_metadata) %>%
+  column_to_rownames("barcodes") %>%
+  select(-orig.ident)
+
+seurat_4066 <- AddMetaData(object= Aggr_4066_Seurat, metadata =  full_new_meta, col.name = "orig.ident")
+
+```
+
+```{r}
+counts <- GetAssayData(object = Aggr_4066_Seurat, slot = "counts")
+
+sce <- SingleCellExperiment(list(counts = counts))
+
+sce <- decontX(sce)
+
+umap <- reducedDim(sce, "decontX_UMAP")
+plotDimReduceCluster(x = sce$decontX_clusters,
+    dim1 = umap[, 1], dim2 = umap[, 2])
+
+plotDecontXContamination(sce)
+
+Seurat_4066 <- CreateSeuratObject((decontXcounts(sce)))
+
+Seurat_4066 <- AddMetaData(object= Seurat_4066, metadata =  full_new_meta, col.name = "orig.ident")
+```
+
+```{r}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+Seurat_4066[["percent.mt"]] <- PercentageFeatureSet(Seurat_4066, pattern = "^MT-")
+Seurat_4066[["percent.ribo"]] <- PercentageFeatureSet(Seurat_4066, pattern = "^RP")
+
+# Visualize QC metrics as a violin plot
+png("C:/Valerie/violinplot_aggregate_4066.png", res=600, width=8000, height=5000)
+VlnPlot(Seurat_4066, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), ncol = 4, pt.size = 0.01, split.by = "orig.ident")
+dev.off()
+
+head(Seurat_4066@meta.data, 5)
+
+FeatureScatter(Seurat_4066,"nFeature_RNA", "nCount_RNA" )
+```
+```{r}
+dim(Seurat_4066) #36601 27614
+median(Seurat_4066$nFeature_RNA) #1581
+median(Seurat_4066$nCount_RNA) #2113
+
+Illumina_4066 <- subset(Seurat_4066, orig.ident=="Illumina")
+dim(Illumina_4066) #36601  8629
+median(Illumina_4066$nFeature_RNA) #1470
+median(Illumina_4066$nCount_RNA) #1588.207
+
+MGI_4066 <- subset(Seurat_4066, orig.ident=="MGI")
+dim(MGI_4066) #36601  8002
+median(MGI_4066$nFeature_RNA) #1545
+median(MGI_4066$nCount_RNA) #1734.86
+```
+```{r}
+Seurat_4066_subset <- subset(Seurat_4066, subset = nFeature_RNA > 50 & nFeature_RNA < 6000 & percent.mt < 25)
+
+#seurat_4411_norm <- SCTransform(seurat_4411_subset, vars.to.regress = c("nCount_RNA","percent.mt"), verbose = FALSE, variable.features.n = 3000)
+
+```
+
+```{r}
+sce <- as.SingleCellExperiment(Seurat_4066_subset)
+
+sce <- scDblFinder(sce)
+#Threshold found:0.049
+#1336 (8.3%) doublets called
+
+Seurat_4066_norm_db <- as.Seurat(sce)
+
+Seurat_4066_norm_db <- AddMetaData(object= Seurat_4066_norm_db, metadata =  full_new_meta, col.name = "orig.ident")
+
+Seurat_4066_norm_db <- subset(Seurat_4066_norm_db, scDblFinder.class=="singlet")
+
+Seurat_4066_norm_db <- SCTransform(Seurat_4066_norm_db, vars.to.regress = c("nCount_RNA","percent.mt"), verbose = FALSE, variable.features.n = 3000)
+```
+
+```{r}
+Seurat_4066_norm_db <- RunPCA(Seurat_4066_norm_db, features = VariableFeatures(object = Seurat_4066_norm_db))
+Seurat_4066_norm_db <- FindNeighbors(Seurat_4066_norm_db, dims = 1:10)
+Seurat_4066_norm_db <- FindClusters(Seurat_4066_norm_db, resolution = 0.05)
+Seurat_4066_norm_db <- RunUMAP(Seurat_4066_norm_db, dims = 1:10)
+
+png("C:/Valerie/UMAP_4066_aggregate.png", res=600, width=7000, height=5000)
+plot <- DimPlot(Seurat_4066_norm_db, reduction = "umap", label = F, split.by = "orig.ident", cols = colmaps)
+plot
+dev.off()
+
+FeaturePlot(Seurat_4066_norm_db, features = "PDGFRB") + plot
+
+#Cluster 0: Epithelial cells
+#Cluster 1: Mesenchymal cells
+#Cluster 2: Epithelial
+#Cluster 3: Epithelial
+#Cluster 4: Myoepythelial
+#Cluster 5: Endothelial
+#Cluster 6: unknown
+#CDH1 / EPCAM / KRT19/ ERBB2 (Epithelial)
+#VWF / PLVAP / PECAM1 (Endothelial)
+#CD163 (Myeloid cells)
+#breast cancer: KRT7/ CDH1/ EPCAM/ SOLE/ ERBB2/ CEACAM6/ ESR1/ MKI67
+#T-cells: CCL5/IL7R/CD3E
+#fibroblasts: ACTA2/ LUM/ POSTN/MMP2/ PDGFRA / COL1A1/ ACTA2/ POSTN  (Fibroblasts)
+#breast myoepithelial: DST/ MYH11/ SERPINA3/ KRT5/ MYLK#SERPINA3/ MYLK (breast myoepithelial)
+#mesenchymal cells: PDGFRB
+#Mast cells: CPA3/TPSAB1/ CTSG
+```
+```{r}
+new.cluster.ids <- c("Epithelial cells 1","Mesenchymal cells","Epithelial cells 2","Epithelial cells 3","Myoepithelial cells", "Endothelial cells","unknown cells")
+names(new.cluster.ids) <- levels(Seurat_4066_norm_db)
+Seurat_4066_norm_db <- RenameIdents(Seurat_4066_norm_db, new.cluster.ids)
+Idents(Seurat_4066_norm_db) -> Seurat_4066_norm_db$celltypes
+
+#Cluster 0: Epithelial cells
+#Cluster 1: Mesenchymal cells
+#Cluster 2: Epithelial
+#Cluster 3: Epithelial
+#Cluster 4: Myoepythelial
+#Cluster 5: Endothelial
+#Cluster 6: unknown
+```
+
+```{r}
+Seurat_4066_norm_db$cell_cluster <- paste(Seurat_4066_norm_db$celltypes, sep = '_')
+Seurat_4066_norm_db_table1 <- prop.table(table(Seurat_4066_norm_db$cell_cluster, Seurat_4066_norm_db$orig.ident ), margin = 2)
+Seurat_4066_norm_db_table2 <- Seurat_4066_norm_db_table1*100
+write.csv(combined4066_table2, "figures/Percentages_clusters_allcells.csv")
+
+png("C:/Valerie/barplot_Seurat_4066_norm_db.png", res=600, width=6000, height=3000)
+par(mar=c(10, 5, 3, 28))
+barplot(Seurat_4066_norm_db_table2,
+  main = "Cell subcluster fractions",
+  ylab = "Percentage (%)",
+  col = colmaps,
+  xlim=c(0,4),
+  beside = FALSE,
+  las=2)
+dev.off()
+```
+
+
+
+```{r}
+saveRDS(Seurat_4411_norm_db, "C:/Valerie/Seurat_4411_norm_db")
+```
