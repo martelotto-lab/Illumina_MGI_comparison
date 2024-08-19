@@ -17,10 +17,3 @@ The repository is organized into the following folder tree, which contains all t
 Data accessibility
 
 The complete raw data (FASTQ files) generated in this study have been submitted to the NCBI Gene Expression Omnibus (GEO) under accession number GSE275090.
-
-Code accessibility
-
-You can easily download a copy of all the files contained in this repository by:
-
-Cloning the git repository using the following command in the terminal:
-git clone https://github.com/
