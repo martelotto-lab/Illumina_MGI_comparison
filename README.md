@@ -8,11 +8,10 @@ Different companies have developed sequencing platforms with a wide variety of s
 
 Code implementation
 
-The repository is organized into the following folder tree, which contains all the necessary files and scripts to perform the detailed tasks and reproduce all our results.
+The repository contains the following files to reproduce all our results.
 
-01_cellranger_mapping -->
-02_QC -->
-03_clustering_annotation -->
+Part1_BasicAnalysis
+Part2_Integration
 
 Data accessibility
 
