@@ -8,7 +8,7 @@ Different companies have developed sequencing platforms with a wide variety of s
 
 Code implementation
 
-The repository contains the following files to reproduce all our results.
+The repository contains the following files used for analysis.
 
 Part1_BasicAnalysis
 Part2_Integration
