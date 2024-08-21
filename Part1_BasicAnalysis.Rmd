@@ -1,0 +1,133 @@
+---
+title: 'Illumima_MGI_Sequencing'
+author: "Valerie Vandenbempt"
+date: "2023-09-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(SingleCellExperiment)
+library(celda)
+library(scDblFinder)
+```
+
+
+```{r}
+cell.data_org_Illumina <- Read10X("Illumina_filtered_feature_bc_matrix")
+cell.data_org_MGI <- Read10X("MGI_filtered_feature_bc_matrix")
+
+Illumina_Seurat <- CreateSeuratObject(counts = cell.data_org_Illumina, names.delim = "-", names.field = 2)
+MGI_Seurat <- CreateSeuratObject(counts = cell.data_org_MGI, names.delim = "-", names.field = 2)
+```
+
+```{r}
+counts_Illumina <- GetAssayData(object = Illumina_Seurat, slot = "counts")
+sce_Illumina<- SingleCellExperiment(list(counts = counts_Illumina))
+sce_Illumina <- decontX(sce_Illumina)
+Illumina_Seurat <- CreateSeuratObject((decontXcounts(sce_Illumina)), project = "Illumina")
+
+counts_MGI <- GetAssayData(object = MGI_Seurat, slot = "counts")
+sce_MGI <- SingleCellExperiment(list(counts = counts_MGI))
+sce_MGI <- decontX(sce_MGI)
+MGI_Seurat <- CreateSeuratObject((decontXcounts(sce_MGI)), project = "MGI")
+```
+
+```{r}
+Illumina_Seurat[["percent.mt"]] <- PercentageFeatureSet(Illumina_Seurat, pattern = "^MT-")
+Illumina_Seurat[["percent.ribo"]] <- PercentageFeatureSet(Illumina_Seurat, pattern = "^RP")
+Illumina_Seurat <- subset(Illumina_Seurat, subset = nFeature_RNA > 50 & nFeature_RNA < 6000 & percent.mt < 20)
+
+MGI_Seurat[["percent.mt"]] <- PercentageFeatureSet(MGI_Seurat, pattern = "^MT-")
+MGI_Seurat[["percent.ribo"]] <- PercentageFeatureSet(MGI_Seurat, pattern = "^RP")
+MGI_Seurat <- subset(MGI_Seurat, subset = nFeature_RNA > 50 & nFeature_RNA < 6000 & percent.mt < 20)
+```
+
+```{r}
+sce_Illumina <- as.SingleCellExperiment(Illumina_Seurat)
+sce_Illumina <- scDblFinder(sce_Illumina)
+Illumina_Seurat <- as.Seurat(sce_Illumina, project = "Illumina", counts = "counts", data = NULL)
+Illumina_Seurat <- subset(Illumina_Seurat, scDblFinder.class=="singlet")
+
+sce_MGI <- as.SingleCellExperiment(MGI_Seurat)
+sce_MGI <- scDblFinder(sce_MGI)
+MGI_Seurat <- as.Seurat(sce_MGI, project = "MGI",  counts = "counts", data=NULL)
+MGI_Seurat <- subset(MGI_Seurat, scDblFinder.class=="singlet")
+
+Illumina_Seurat<- SCTransform(Illumina_Seurat, verbose = FALSE, variable.features.n = 1000,conserve.memory=T)
+MGI_Seurat<- SCTransform(MGI_Seurat, verbose = FALSE, variable.features.n = 1000,conserve.memory=T)
+```
+
+```{r}
+dim(Illumina_Seurat)
+median(Illumina_Seurat$nFeature_RNA)
+median(Illumina_Seurat$nCount_RNA)
+mean(Illumina_Seurat$nFeature_RNA)
+mean(Illumina_Seurat$nCount_RNA) 
+min(Illumina_Seurat$nFeature_RNA)
+
+dim(MGI_Seurat)
+median(MGI_Seurat$nFeature_RNA)
+median(MGI_Seurat$nCount_RNA)
+mean(MGI_Seurat$nFeature_RNA)
+mean(MGI_Seurat$nCount_RNA)
+min(MGI_Seurat$nFeature_RNA)
+```
+
+```{r}
+Illumina_Seurat <- RunPCA(Illumina_Seurat, features = VariableFeatures(object = Illumina_Seurat))
+dims.use = 1:30
+#Umap
+Illumina_Seurat <- RunUMAP(Illumina_Seurat, dims = dims.use, verbose = F)
+#FindNeighbors
+Illumina_Seurat <- FindNeighbors(Illumina_Seurat, dims = dims.use, verbose = F)
+#Findclusters
+Illumina_Seurat <- FindClusters(Illumina_Seurat, resolution = 0.1, verbose = F)
+
+plot <- DimPlot(Illumina_Seurat, label = TRUE)
+plot
+
+DotPlot(Illumina_Seurat, features = c("CDH1", "EPCAM", "KRT19", "ERBB2")) #Epithelial Cells
+DotPlot(Illumina_Seurat, features = c("PDGFRA", "COL1A1", "ACTA2")) #Mesenchymal Cells
+DotPlot(Illumina_Seurat, features = c("VWF", "PLVAP", "PECAM1")) #Endothelial Cells
+DotPlot(Illumina_Seurat, features = c("CD163")) #Myeloid Cells
+DotPlot(Illumina_Seurat, features = c("MKI67")) #Cycling Cells
+DotPlot(Illumina_Seurat, features = c("CCL5", "IL7R", "CD3E")) #T-cells
+DotPlot(Illumina_Seurat, features = c("MYH11", "SERPINA3", "MYLK")) #Myoetpithelial Cells
+DotPlot(Illumina_Seurat, features = c("CPA3", "TPSAB1", "CTSG")) #Mast Cells
+```
+
+```{r}
+MGI_Seurat <- RunPCA(MGI_Seurat, features = VariableFeatures(object = MGI_Seurat))
+dims.use = 1:30
+#Umap
+MGI_Seurat <- RunUMAP(MGI_Seurat, dims = dims.use, verbose = F)
+#FindNeighbors
+MGI_Seurat <- FindNeighbors(MGI_Seurat, dims = dims.use, verbose = F)
+#Findclusters
+MGI_Seurat <- FindClusters(MGI_Seurat, resolution = 0.1, verbose = F)
+
+png("UMAP_part1_Illumina.png", res = 600, width = 3000, height = 2000)
+plot <- DimPlot(MGI_Seurat, label = TRUE)
+plot
+dev.off()
+
+DotPlot(MGI_Seurat, features = c("CDH1", "EPCAM", "KRT19", "ERBB2")) #Epithelial Cells
+DotPlot(MGI_Seurat, features = c("PDGFRA", "COL1A1", "ACTA2")) #Mesenchymal Cells
+DotPlot(MGI_Seurat, features = c("VWF", "PLVAP", "PECAM1")) #Endothelial Cells
+DotPlot(MGI_Seurat, features = c("CD163")) #Myeloid Cells
+DotPlot(MGI_Seurat, features = c("MKI67")) #Cycling Cells
+DotPlot(MGI_Seurat, features = c("CCL5", "IL7R", "CD3E")) #T-cells
+DotPlot(MGI_Seurat, features = c("MYH11", "SERPINA3", "MYLK"))  #Myoetpithelial Cells
+DotPlot(MGI_Seurat, features = c("CPA3", "TPSAB1", "CTSG")) #Mast Cells
+```
+
+```{r}
+saveRDS(Illumina_Seurat, "Illumina_Seurat_part1.rds")
+saveRDS(MGI_Seurat, "MGI_Seurat_part1.rds")
+```
+

@@ -1,0 +1,120 @@
+---
+title: "Part 2 Integration"
+author: "Valerie Vandenbempt"
+date: "2023-09-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Sample 4399
+The filtered_feature_bc_matrix seperates the samples based on _1 and _2 in as an extra tag on the cell barcodes. To assign the condition names, a metadata file is generated and added to the Seurat object by AddMetaData.
+```{r}
+Part2_Illumina<- readRDS("Illumina_Seurat_part1.rds")
+Part2_MG50 <- readRDS("MG50_Seurat_part1.rds")
+
+merg_Seurat <- merge(x=Part2_Illumina, y=Part2_MG50)
+```
+
+```{r}
+Illumina_Seurat_raw <- CreateSeuratObject(counts = cell.data_org_Illumina, names.delim = "-", names.field = 2)
+MG50_Seurat_raw <- CreateSeuratObject(counts = cell.data_org_MGI, names.delim = "-", names.field = 2)
+
+Illumina_Seurat_raw$orig.ident <- rep("Illumina")
+MG50_Seurat_raw$orig.ident <- rep("MGI")
+
+merg_Seurat_raw <- merge(x=Illumina_Seurat_raw, y=MG50_Seurat_raw)
+
+png("VlnPlot_nCount.png", res = 600,width=5000, height=4000)
+VlnPlot(merg_Seurat_raw, features = c("nCount_RNA"), ncol = 1, pt.size = FALSE, split.by = "orig.ident", cols = c("#8C2F39", "#FED0BB")) + labs(title = "Sample 1", y="Number of UMI per cell", x="") 
+dev.off()
+
+png("VlnPlot_nFeature.png", res = 600, width=5000, height=4000)
+VlnPlot(merg_Seurat_raw, features = c("nFeature_RNA"), ncol = 1, pt.size = FALSE, split.by = "orig.ident", cols = c("#8C2F39", "#FED0BB")) + labs(title = "Sample 1", y="Number of genes per cell", x="") 
+dev.off()
+
+png("FeatureScatter_raw.png", res = 600, width = 8000, height = 6000)
+FeatureScatter(merg_Seurat_raw, "nCount_RNA","nFeature_RNA", group.by = "orig.ident", cols = c("#8C2F39", "#FED0BB")) + theme(axis.text.x=element_text(hjust=1, size=20), axis.title = element_text(size=20), axis.text.y = element_text(hjust=0.5,size = 20), axis.ticks = element_line(size = 3), axis.line = element_line(size=1.5), legend.text=element_text(hjust = 0.5, size = 20), legend.background = element_rect(fill = "transparent"),panel.background = element_rect(fill = "transparent"),plot.background = element_rect(fill = "transparent")) + guides(color = guide_legend(override.aes = list(size = 10))) + labs(title = "Sample 1", x="Total UMI per cell", y="Total Genes per cell")
+dev.off()
+
+
+
+Illumina_data <- as.data.frame(Illumina_Seurat_raw$nCount_RNA)
+
+MGI_data <- as.data.frame(MG50_Seurat_raw$nCount_RNA)
+
+rownames(Illumina_data) <- rownames(Illumina_data) %>% gsub("-1", "",.) 
+rownames(MGI_data)  <- rownames(MGI_data) %>% gsub("-1", "",.) 
+
+Illumina_data %>% rownames_to_column("BC") -> Illumina_data
+MGI_data %>% rownames_to_column("BC") -> MGI_data
+
+merged <- merge(x= Illumina_data, y= MGI_data, by="BC")
+merged_2 <- full_join(Illumina_data, MGI_data, by="BC")
+
+merged_2[is.na(merged_2)] <- 0
+
+merged_pearson <- merged %>% dplyr::select(c(`Illumina_Seurat_raw$nCount_RNA`, `MG50_Seurat_raw$nCount_RNA`))
+merged_2_pearson <- merged_2 %>% dplyr::select(c(`Illumina_Seurat_raw$nCount_RNA`, `MG50_Seurat_raw$nCount_RNA`))
+
+pearson_4399 <- cor(merged_pearson,method = "pearson")
+pearson_2_4399 <- cor(merged_2_pearson,method = "pearson")
+
+merged_2 %>% mutate(Overlap = ifelse(BC %in% merged$Row.names, "both", "one")) -> merged_2
+
+png("Pearson_4399.png", res = 600, width = 6000, height = 5000)
+ggplot(merged_2, aes(x=`Illumina_Seurat_raw$nCount_RNA`, y=`MG50_Seurat_raw$nCount_RNA`)) +
+  geom_point(aes(color=Overlap)) + 
+  geom_smooth(data = merged, color="black") +
+  theme_classic(base_size = 20) +
+  labs(x="Illumina", y="MGI", title = "Sample 1") +
+  scale_color_manual(values=c("one"="#246A73", "both"= "#2E3060")) + 
+  NoLegend() +
+  theme(plot.title = element_text(hjust = 0.5, face ="bold"))
+dev.off()
+
+count(merged_2$Overlap=="one")
+```
+
+
+```{r}
+list_part2_4399 <- SplitObject(merg_Seurat, split.by = "orig.ident")
+
+
+#SCTransform
+list_part2_4399 <- lapply(X = list_part2_4399, FUN = SCTransform)
+features_part2_4399 <- SelectIntegrationFeatures(object.list = list_part2_4399, nfeatures = 3000)
+list_part2_4399 <- PrepSCTIntegration(object.list = list_part2_4399, anchor.features = features_part2_4399)
+
+anchors_part2_ <- FindIntegrationAnchors(object.list = list_part2_4399, normalization.method = "SCT",
+    anchor.features = features_part2_4399)
+```
+
+```{r}
+merg_Seurat <- IntegrateData(anchorset = anchors_part2_, normalization.method = "SCT")
+```
+
+```{r}
+merg_Seurat <- RunPCA(merg_Seurat, verbose = FALSE)
+merg_Seurat <- RunUMAP(merg_Seurat, reduction = "pca", dims = 1:50)
+merg_Seurat <- FindNeighbors(merg_Seurat, dims = 1:50, verbose = F)
+merg_Seurat <- FindClusters(merg_Seurat, resolution = 0.1, verbose = F)
+```
+
+```{r}
+plot_part2_4399 <- DimPlot(merg_Seurat, reduction = "umap", label = F, repel = T, split.by = "orig.ident")
+plot_part2_4399
+```
+
+```{r}
+DotPlot(merg_Seurat, features = c("CDH1", "EPCAM", "KRT19", "ERBB2")) #Epithelial Cells
+DotPlot(merg_Seurat, features = c("PDGFRA", "COL1A1", "ACTA2")) #Mesenchymal Cells
+DotPlot(merg_Seurat, features = c("VWF", "PLVAP", "PECAM1")) #Endothelial Cells
+DotPlot(merg_Seurat, features = c("CD163")) #Myeloid Cells
+DotPlot(merg_Seurat, features = c("MKI67")) #Cycling Cells
+DotPlot(merg_Seurat, features = c("CCL5", "IL7R", "CD3E")) #T-cells
+DotPlot(merg_Seurat, features = c("MYH11", "SERPINA3", "MYLK")) #Myoetpithelial Cells
+DotPlot(merg_Seurat, features = c("CPA3", "TPSAB1", "CTSG")) #Mast Cells
+```
